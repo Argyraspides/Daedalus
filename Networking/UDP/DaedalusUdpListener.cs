@@ -129,7 +129,10 @@ public static class DaedalusUdpListener
         {
             _subscriberBuffers.TryRemove(subKey, out _);
             _subCallbacks.TryRemove(subKey, out _);
-            _subIdsInuse.Remove(GetSubIdFromSubKey(subKey));
+
+            ushort removedSubId = GetSubIdFromSubKey(subKey);
+            _subIdsInuse.Remove(removedSubId);
+            _freedSubIds.Add(removedSubId);
 
             ulong endpointKey = GetEndpointKeyFromSubKey(subKey);
 
