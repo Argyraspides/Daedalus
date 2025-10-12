@@ -233,6 +233,11 @@ public static class DaedalusUdpListener
             {
                 udpListeningTasks.Remove(clientToRemove);
             }
+
+            // TODO::ARGYRASPIDES() { This is kinda shitty ... we only launch/remove tasks when we register/deregister
+            //  subscribers, so we shouldn't be waiting like this in a loop but rather this function should be invoked whenever
+            //  we register/deregister ... }
+            await Task.Delay(1000, ct);
         }
     }
 
