@@ -305,11 +305,12 @@ public static class DaedalusUdpListener
         Console.WriteLine("Destroying DaedalusUdpListener ...");
 
         _cancellationTokenSource.Cancel();
-
-        foreach (UdpClient client in _udpClients.Values)
+        
+        UdpClient[] clients = _udpClients.Values.ToArray();
+        foreach (UdpClient udpClient in clients)
         {
-            client.Close();
-            client.Dispose();
+            udpClient.Close();
+            udpClient.Dispose();
         }
 
         Console.WriteLine("Finished destroying DaedalusUdpListener!");
