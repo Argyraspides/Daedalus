@@ -145,7 +145,10 @@ public static class DaedalusUdpListener
 
             // Number of subscribers with same endpoint
             int subsLeft = _subscriberBuffers.Keys.Count(_subKey => GetEndpointKeyFromSubKey(_subKey) == endpointKey);
-            if (subsLeft == 0) _udpClients.TryRemove(endpointKey, out _);
+            if (subsLeft == 0)
+            {
+                _udpClients.TryRemove(endpointKey, out _);
+            } 
         }
         
         Task.Run(() => UpdateUdpListeningLoops(_cancellationTokenSource.Token));
