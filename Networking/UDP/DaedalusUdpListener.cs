@@ -102,7 +102,12 @@ public static class DaedalusUdpListener
 
             ulong epKey = GetEndpointKey(ipEndpoint);
             ushort subId;
-            if (_freedSubIds.Count > 0)
+
+            if (_freedSubIds.Count == 0 && _subIdsInuse.Count == 0)
+            {
+                subId = 0;
+            }
+            else if (_freedSubIds.Count > 0)
             {
                 subId = _freedSubIds.First();
                 _freedSubIds.Remove(subId);
