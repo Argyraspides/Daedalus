@@ -6,7 +6,9 @@ using System.Net;
 using System.Net.Sockets;
 using System.Runtime.CompilerServices;
 using System.Threading;
+using System.Threading.Tasks;
 using Daedalus.Logging;
+
 namespace Daedalus.Networking.UDP;
 
 /// <summary>
@@ -52,7 +54,7 @@ public static class DaedalusUdpListener
         = new ConcurrentDictionary<ulong, UdpClient>();
 
     // IP:Port:SubID encoded in ulong -> Buffer
-    private static ConcurrentDictionary<ulong, ConcurrentQueue<UdpReceiveResult>> buffers
+    private static ConcurrentDictionary<ulong, ConcurrentQueue<UdpReceiveResult>> subscriberBuffers
         = new ConcurrentDictionary<ulong, ConcurrentQueue<UdpReceiveResult>>();
 
     // IP:Port:SubID encoded in ulong -> Callback
@@ -68,8 +70,8 @@ public static class DaedalusUdpListener
     {
         AppDomain.CurrentDomain.ProcessExit += (_, __) => { Dispose(); };
         cancellationTokenSource = new CancellationTokenSource();
-        listenerThread = new Thread(() => { ListenUDP(cancellationTokenSource.Token); });
-        listenerThread.Start();
+        listenerThread = new Thread(() => { ListenUdp(cancellationTokenSource.Token); });
+        Task.Run(() => { ListenUdp(cancellationTokenSource.Token); });
     }
 
     /// <summary>
@@ -92,7 +94,7 @@ public static class DaedalusUdpListener
             ulong subKey = GetSubKey(epKey, nextId);
 
             udpClients.GetOrAdd(epKey, (_) => { return new UdpClient(ipEndpoint); });
-            buffers.GetOrAdd(subKey, new ConcurrentQueue<UdpReceiveResult>());
+            subscriberBuffers.GetOrAdd(subKey, new ConcurrentQueue<UdpReceiveResult>());
 
             subCallbacks.GetOrAdd(subKey, callback);
             idsInUse.Add(nextId);
@@ -112,17 +114,14 @@ public static class DaedalusUdpListener
     {
         lock (registrationLock)
         {
-            buffers.TryRemove(subKey, out _);
+            subscriberBuffers.TryRemove(subKey, out _);
             subCallbacks.TryRemove(subKey, out _);
             idsInUse.Remove(GetSubIdFromSubKey(subKey));
 
             ulong endpointKey = GetEndpointKeyFromSubKey(subKey);
 
             // Number of subscribers with same endpoint
-            // TODO::ARGYRASPIDES() { Find a more efficient way to do this.
-            // Its possible some processes could constantly register/deregister in future }
-            int subsLeft = buffers.Keys.Where(_subKey => GetEndpointKeyFromSubKey(_subKey) == endpointKey).Count();
-
+            int subsLeft = subscriberBuffers.Keys.Count(_subKey => GetEndpointKeyFromSubKey(_subKey) == endpointKey);
             if (subsLeft == 0) udpClients.TryRemove(endpointKey, out _);
         }
     }
@@ -134,7 +133,7 @@ public static class DaedalusUdpListener
     /// <returns>The next message from the queue, or empty result if none available</returns>
     public static UdpReceiveResult Receive(ulong subKey)
     {
-        if (!buffers.TryGetValue(subKey, out ConcurrentQueue<UdpReceiveResult> buff))
+        if (!subscriberBuffers.TryGetValue(subKey, out ConcurrentQueue<UdpReceiveResult> buff))
         {
             Console.WriteLine($"Unable to find subscriber with ID of {subKey}!");
             return new UdpReceiveResult();
@@ -196,29 +195,83 @@ public static class DaedalusUdpListener
         return (ushort)(subKey &= (ulong)ushort.MaxValue);
     }
 
-    private static async void ListenUDP(CancellationToken ct)
+    private static async Task ListenUdp(CancellationToken ct)
     {
-        // TODO::ARGYRASPIDES()  { this shit is O(n^2) absolutely disgusting ... fix it up later tho coz rn its fine }
+        Dictionary<ulong, Task> udpListeningTasks = new Dictionary<ulong, Task>();
+
         while (!ct.IsCancellationRequested)
         {
-            foreach (KeyValuePair<ulong, UdpClient> client in udpClients)
+            KeyValuePair<ulong, UdpClient>[] ipToClientKvps = udpClients.ToArray();
+            foreach (KeyValuePair<ulong, UdpClient> kvp in ipToClientKvps)
             {
-                UdpReceiveResult data = await client.Value.ReceiveAsync(ct);
-
-                foreach (KeyValuePair<ulong, ConcurrentQueue<UdpReceiveResult>> buff in buffers)
+                if (!udpListeningTasks.ContainsKey(kvp.Key))
                 {
-                    if (GetEndpointKeyFromSubKey(buff.Key) != client.Key) continue;
+                    udpListeningTasks[kvp.Key] = Task.Run(() => ListenToClient(kvp.Key, ct));
+                }
+            }
 
-                    if (buff.Value.Count == MAX_BUFFER_SIZE)
-                    {
-                        buff.Value.TryDequeue(out _);
-                    }
+            IEnumerable<ulong> clientsToRemove = udpListeningTasks.Keys.ToArray().Except(udpClients.Keys.ToArray());
 
-                    buff.Value.Enqueue(data);
+            foreach (ulong clientToRemove in clientsToRemove)
+            {
+                udpListeningTasks.Remove(clientToRemove);
+            }
+        }
+    }
 
-                    // Let subscriber know udp message has been received
-                    subCallbacks.TryGetValue(buff.Key, out Action<ulong> subCallback);
-                    subCallback?.Invoke(buff.Key);
+    private static async Task ListenToClient(ulong udpClientKey, CancellationToken ct)
+    {
+        udpClients.TryGetValue(udpClientKey, out UdpClient udpClient);
+
+        if (udpClient == null)
+        {
+            Console.WriteLine("DaedalusUdpListener::ListenToClient - tried to listen to a client that doesn't exist");
+            return;
+        }
+
+        while (!ct.IsCancellationRequested && udpClients.ContainsKey(udpClientKey))
+        {
+            UdpReceiveResult data;
+            try
+            {
+                data = await udpClient.ReceiveAsync();
+            }
+            catch (SocketException e)
+            {
+                Console.WriteLine("DaedalusUdpListener::ListenToClient, ", e);
+                return;
+            }
+            catch (ObjectDisposedException ode)
+            {
+                Console.WriteLine("DaedalusUdpListener::ListenToClient, ", ode);
+                return;
+            }
+
+            foreach (KeyValuePair<ulong, ConcurrentQueue<UdpReceiveResult>> subBuffer in subscriberBuffers)
+            {
+                ulong ipEndpointKey = GetEndpointKeyFromSubKey(subBuffer.Key);
+                if (ipEndpointKey != udpClientKey)
+                {
+                    continue;
+                }
+
+                if (subBuffer.Value.Count > MAX_BUFFER_SIZE)
+                {
+                    subBuffer.Value.TryDequeue(out _);
+                }
+
+                subBuffer.Value.Enqueue(data);
+
+                try
+                {
+                    subCallbacks.TryGetValue(subBuffer.Key, out Action<ulong> callback);
+                    callback?.Invoke(ipEndpointKey);
+                }
+                catch (Exception e)
+                {
+                    Console.WriteLine(
+                        "DaedalusUdpListener::ListenToClient, attempt to invoke callback on subscriber which threw an unhandled exception ",
+                        e);
                 }
             }
         }
