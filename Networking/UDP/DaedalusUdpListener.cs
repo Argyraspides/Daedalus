@@ -296,8 +296,6 @@ public static class DaedalusUdpListener
 
         _cancellationTokenSource.Cancel();
 
-        listenerThread.Join();
-
         foreach (UdpClient client in _udpClients.Values)
         {
             client.Close();
