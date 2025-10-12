@@ -278,7 +278,7 @@ public static class DaedalusUdpListener
                     continue;
                 }
 
-                if (subBuffer.Value.Count > MAX_BUFFER_SIZE)
+                if (subBuffer.Value.Count >= MAX_BUFFER_SIZE)
                 {
                     subBuffer.Value.TryDequeue(out _);
                 }
