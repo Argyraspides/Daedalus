@@ -54,6 +54,10 @@ public static class DaedalusUdpListener
     private static ConcurrentDictionary<ulong, UdpClient> _udpClients
         = new ConcurrentDictionary<ulong, UdpClient>();
 
+    // IP:Port (representing UdpClient) -> Task (representing ListenToClient() loop)
+    private static ConcurrentDictionary<ulong, Task> _udpListeningTasks
+        = new ConcurrentDictionary<ulong, Task>();
+
     // IP:Port:SubID encoded in ulong -> Buffer
     private static ConcurrentDictionary<ulong, ConcurrentQueue<UdpReceiveResult>> _subscriberBuffers
         = new ConcurrentDictionary<ulong, ConcurrentQueue<UdpReceiveResult>>();
@@ -70,7 +74,6 @@ public static class DaedalusUdpListener
     {
         AppDomain.CurrentDomain.ProcessExit += (_, __) => { Dispose(); };
         _cancellationTokenSource = new CancellationTokenSource();
-        Task.Run(() => { ListenUdp(_cancellationTokenSource.Token); });
     }
 
     /// <summary>
@@ -85,13 +88,15 @@ public static class DaedalusUdpListener
         {
             if (ipEndpoint.AddressFamily == AddressFamily.InterNetworkV6)
             {
-                Console.WriteLine("Daedalus::RegisterUdpClient - Error! DaedalusUdpListener doesn't yet support IPv6 addresses! Aborting ...");
+                Console.WriteLine(
+                    "Daedalus::RegisterUdpClient - Error! DaedalusUdpListener doesn't yet support IPv6 addresses! Aborting ...");
                 return 0;
             }
 
             if (_subIdsInuse.Count >= ushort.MaxValue)
             {
-                Console.WriteLine("Daedalus::RegisterUdpClient - Error! DaedalusUdpListener has reached the maximum number of subscribers! Aborting ...");
+                Console.WriteLine(
+                    "Daedalus::RegisterUdpClient - Error! DaedalusUdpListener has reached the maximum number of subscribers! Aborting ...");
                 return 0;
             }
 
@@ -106,7 +111,7 @@ public static class DaedalusUdpListener
             {
                 subId = (ushort)(_subIdsInuse.Last() + 1);
             }
-            
+
             ulong subKey = GetSubKey(epKey, subId);
 
             _udpClients.GetOrAdd(epKey, (_) => { return new UdpClient(ipEndpoint); });
@@ -114,6 +119,8 @@ public static class DaedalusUdpListener
 
             _subCallbacks.GetOrAdd(subKey, callback);
             _subIdsInuse.Add(subId);
+
+            Task.Run(() => UpdateUdpListeningLoops(_cancellationTokenSource.Token));
 
             return subKey;
         }
@@ -140,6 +147,8 @@ public static class DaedalusUdpListener
             int subsLeft = _subscriberBuffers.Keys.Count(_subKey => GetEndpointKeyFromSubKey(_subKey) == endpointKey);
             if (subsLeft == 0) _udpClients.TryRemove(endpointKey, out _);
         }
+        
+        Task.Run(() => UpdateUdpListeningLoops(_cancellationTokenSource.Token));
     }
 
     /// <summary>
@@ -211,33 +220,22 @@ public static class DaedalusUdpListener
         return (ushort)(subKey &= (ulong)ushort.MaxValue);
     }
 
-    private static async Task ListenUdp(CancellationToken ct)
+    private static async Task UpdateUdpListeningLoops(CancellationToken ct)
     {
-        // IP:Port (representing UdpClient) -> Task (representing ListenToClient func)
-        Dictionary<ulong, Task> udpListeningTasks = new Dictionary<ulong, Task>();
-
-        while (!ct.IsCancellationRequested)
+        KeyValuePair<ulong, UdpClient>[] ipToClientKvps = _udpClients.ToArray();
+        foreach (KeyValuePair<ulong, UdpClient> kvp in ipToClientKvps)
         {
-            KeyValuePair<ulong, UdpClient>[] ipToClientKvps = _udpClients.ToArray();
-            foreach (KeyValuePair<ulong, UdpClient> kvp in ipToClientKvps)
+            if (!_udpListeningTasks.ContainsKey(kvp.Key))
             {
-                if (!udpListeningTasks.ContainsKey(kvp.Key))
-                {
-                    udpListeningTasks[kvp.Key] = Task.Run(() => ListenToClient(kvp.Key, ct));
-                }
+                _udpListeningTasks[kvp.Key] = Task.Run(() => ListenToClient(kvp.Key, ct));
             }
+        }
 
-            IEnumerable<ulong> clientsToRemove = udpListeningTasks.Keys.ToArray().Except(_udpClients.Keys.ToArray());
+        IEnumerable<ulong> clientsToRemove = _udpListeningTasks.Keys.ToArray().Except(_udpClients.Keys.ToArray());
 
-            foreach (ulong clientToRemove in clientsToRemove)
-            {
-                udpListeningTasks.Remove(clientToRemove);
-            }
-
-            // TODO::ARGYRASPIDES() { This is kinda shitty ... we only launch/remove tasks when we register/deregister
-            //  subscribers, so we shouldn't be waiting like this in a loop but rather this function should be invoked whenever
-            //  we register/deregister ... }
-            await Task.Delay(1000, ct);
+        foreach (ulong clientToRemove in clientsToRemove)
+        {
+            _udpListeningTasks.Remove(clientToRemove, out _);
         }
     }
 
