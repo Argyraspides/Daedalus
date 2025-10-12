@@ -89,7 +89,7 @@ public static class DaedalusUdpListener
                 return 0;
             }
 
-            if (_idsInUse.Count == ushort.MaxValue)
+            if (_idsInUse.Count >= ushort.MaxValue)
             {
                 Console.WriteLine("Daedalus::RegisterUdpClient - Error! DaedalusUdpListener has reached the maximum number of subscribers! Aborting ...");
                 return 0;
