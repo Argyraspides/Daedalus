@@ -44,10 +44,10 @@ public static class DaedalusUdpListener
 {
     private const uint MAX_BUFFER_SIZE = 512;
 
-    private static SortedSet<ushort> _idsInUse
+    private static SortedSet<ushort> _subIdsInuse
         = new SortedSet<ushort>();
 
-    private static HashSet<ushort> _freedIds
+    private static HashSet<ushort> _freedSubIds
         = new HashSet<ushort>();
 
     // IP:Port encoded in ulong -> UdpClient
@@ -89,7 +89,7 @@ public static class DaedalusUdpListener
                 return 0;
             }
 
-            if (_idsInUse.Count >= ushort.MaxValue)
+            if (_subIdsInuse.Count >= ushort.MaxValue)
             {
                 Console.WriteLine("Daedalus::RegisterUdpClient - Error! DaedalusUdpListener has reached the maximum number of subscribers! Aborting ...");
                 return 0;
@@ -97,14 +97,14 @@ public static class DaedalusUdpListener
 
             ulong epKey = GetEndpointKey(ipEndpoint);
             ushort subId;
-            if (_freedIds.Count > 0)
+            if (_freedSubIds.Count > 0)
             {
-                subId = _freedIds.First();
-                _freedIds.Remove(subId);
+                subId = _freedSubIds.First();
+                _freedSubIds.Remove(subId);
             }
             else
             {
-                subId = (ushort)(_idsInUse.Last() + 1);
+                subId = (ushort)(_subIdsInuse.Last() + 1);
             }
             
             ulong subKey = GetSubKey(epKey, subId);
@@ -113,7 +113,7 @@ public static class DaedalusUdpListener
             _subscriberBuffers.GetOrAdd(subKey, new ConcurrentQueue<UdpReceiveResult>());
 
             _subCallbacks.GetOrAdd(subKey, callback);
-            _idsInUse.Add(subId);
+            _subIdsInuse.Add(subId);
 
             return subKey;
         }
@@ -129,7 +129,7 @@ public static class DaedalusUdpListener
         {
             _subscriberBuffers.TryRemove(subKey, out _);
             _subCallbacks.TryRemove(subKey, out _);
-            _idsInUse.Remove(GetSubIdFromSubKey(subKey));
+            _subIdsInuse.Remove(GetSubIdFromSubKey(subKey));
 
             ulong endpointKey = GetEndpointKeyFromSubKey(subKey);
 
